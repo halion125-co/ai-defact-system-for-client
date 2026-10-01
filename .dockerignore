@@ -1,0 +1,11 @@
+node_modules
+data
+uploads
+backup
+logs
+.git
+readme
+docs/drafts
+docs/verification/*.js
+backend/tests
+*.log

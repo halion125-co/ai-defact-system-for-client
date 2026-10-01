@@ -1,0 +1,143 @@
+import { api } from './api.js';
+
+/**
+ * 전역 상태: 현재 사용자, 프로젝트 설정, 운영 설정.
+ * 브라우저에는 employeeId만 저장(E2-04). 세션 Actor는 서버가 결정.
+ */
+const LS_KEY = 'dms.lastEmployeeId';
+const FILTER_LS_PREFIX = 'dms.filter.';
+
+export const store = {
+  user: null,
+  project: null,
+  operation: null,
+  _subs: new Set(),
+
+  subscribe(fn) {
+    this._subs.add(fn);
+    return () => this._subs.delete(fn);
+  },
+  _emit() {
+    this._subs.forEach((fn) => fn(this));
+  },
+
+  async loadSession() {
+    const [{ user }, project] = await Promise.all([api.session.current(), api.config.project()]);
+    this.user = user;
+    this.project = project;
+    if (user) {
+      try {
+        this.operation = await api.config.operation();
+      } catch {
+        this.operation = null;
+      }
+    }
+    this._emit();
+    return user;
+  },
+
+  /** silent: 구독자(shell 재렌더)에게 알리지 않고 캐시만 갱신 */
+  async refreshProject({ silent = false } = {}) {
+    const [project, operation] = await Promise.all([api.config.project(), this.user ? api.config.operation() : Promise.resolve(this.operation)]);
+    const changed = JSON.stringify(project) !== JSON.stringify(this.project) || JSON.stringify(operation) !== JSON.stringify(this.operation);
+    this.project = project;
+    this.operation = operation;
+    if (!silent && changed) this._emit();
+    return changed;
+  },
+
+  setUser(user) {
+    this.user = user;
+    if (user) this.rememberEmployeeId(user.employeeId);
+    this._emit();
+  },
+
+  rememberEmployeeId(employeeId) {
+    try {
+      localStorage.setItem(LS_KEY, employeeId);
+    } catch {
+      /* ignore */
+    }
+  },
+  lastEmployeeId() {
+    try {
+      return localStorage.getItem(LS_KEY);
+    } catch {
+      return null;
+    }
+  },
+  forgetEmployeeId() {
+    try {
+      localStorage.removeItem(LS_KEY);
+    } catch {
+      /* ignore */
+    }
+  },
+
+  get isAdmin() {
+    return !!(this.user && this.user.isQualityAdmin);
+  },
+
+  /** 조치자 여부. Admin은 항상 조치자로 취급(전체 조회 가능). */
+  get isResponder() {
+    return !!(this.user && (this.user.isQualityAdmin || this.user.isResponder));
+  },
+
+  envName(id) {
+    const e = (this.project && this.project.environments.find((x) => x.id === id)) || null;
+    return e ? e.displayName : id || '-';
+  },
+  priorityName(code) {
+    if (!code || code === 'UNASSIGNED') return '미지정';
+    const p = this.project && this.project.priorities.find((x) => x.code === code);
+    return p ? p.displayName : code;
+  },
+  activeEnvironments() {
+    return ((this.project && this.project.environments) || []).filter((e) => e.active).sort((a, b) => a.order - b.order);
+  },
+  activePriorities() {
+    return ((this.project && this.project.priorities) || []).filter((p) => p.active !== false).sort((a, b) => a.order - b.order);
+  },
+
+  /**
+   * Dashboard/Kanban/목록의 마지막 조회 조건을 화면별로 기억한다(로그아웃 후에도 유지, 브라우저 단위).
+   * key는 화면 구분자(예: 'dashboard', 'kanban', 'list').
+   */
+  saveFilter(key, query) {
+    try {
+      localStorage.setItem(FILTER_LS_PREFIX + key, JSON.stringify(query || {}));
+    } catch {
+      /* ignore */
+    }
+  },
+  loadFilter(key) {
+    try {
+      const raw = localStorage.getItem(FILTER_LS_PREFIX + key);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  },
+
+  /**
+   * 로그인 알림 팝업 "오늘 하루 보지 않기" — 사용자+날짜+내용태그 단위로 기억(브라우저 단위).
+   * tag에 공지사항 갱신시각 등을 포함하면, 내용이 바뀔 때 당일이라도 다시 노출된다.
+   */
+  dismissLoginAlertToday(userId, tag = 'default') {
+    try {
+      localStorage.setItem(`dms.loginAlertDismiss.${userId}`, JSON.stringify({ date: new Date().toDateString(), tag }));
+    } catch {
+      /* ignore */
+    }
+  },
+  isLoginAlertDismissedToday(userId, tag = 'default') {
+    try {
+      const raw = localStorage.getItem(`dms.loginAlertDismiss.${userId}`);
+      if (!raw) return false;
+      const saved = JSON.parse(raw);
+      return saved.date === new Date().toDateString() && saved.tag === tag;
+    } catch {
+      return false;
+    }
+  },
+};
